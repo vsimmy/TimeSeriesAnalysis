@@ -1,0 +1,168 @@
+---
+title: "Time Series Analysis case"
+author: "Victor Sim"
+date: "10/2/2020"
+output: pdf_document
+---
+# Context
+
+Imagine that you are an investment actuary for a pension fund and you are asked to select a model to forecast future values of those economic and investment variables for future asset and liability modeling purposes. You have been told that the pension fund only invests in equities, bonds, and cash. Price inflation rates and wage inflation rates should also be incorporated in the model for liability modeling and real rates calculations. You are given the dataset to exploratory analysis and modeling.
+
+# Data Glossary
+Variables: % effective rates per annum
+
+  P: Price Inflation Rate  
+  W: Wage Inflation Rate  
+  L: Long-term Interest Rate  
+  S: Short-term Interest Rate  
+  E: Equity index return  
+  B: Bond total return  
+  P_D4: Quarterly differenced price inflation rate (P(t+4)-P(t))  
+  W_D4: Quarterly differenced wage inflation rate (W(t+4)-W(t))  
+  L_D1: First differenced long-term interest rate (L(t+1)-L(t))  
+  S_D1 First differenced short-term interest rate (S(t+1)-S(t))  
+
+# Explore the data
+
+To model a forecast for asset and liability management (ALM) for a pension fund, we need to consider a time series analysis and its different components consisting of trend, seasonality 
+and noise. Thus my question would be
+                        *"Does the model explain the variables well?"*
+
+
+```{r}
+
+#Packages
+library(ggplot2)
+suppressMessages(library(dplyr))
+suppressMessages(library(corrplot))
+suppressMessages(library(tidyverse))
+suppressMessages(library(FitAR))
+suppressMessages(library(reshape2))
+suppressMessages(library(forecast))
+
+#Import dataset
+
+ts_data<- read.delim("C:/Users/user/Downloads/Model CC Quarterly 02Q2 12Q4.txt")
+
+#Column names given
+colnames(ts_data)<-c("Price","Wage","LT_Int","ST_Int",
+                     "Equity","Bond","PQuarDiff",
+                     "WQuarDiff","LTDiff1","STDiff1")
+
+str(ts_data)
+summary(ts_data)
+
+
+```
+
+# What are your recommendations in terms of data manipulation and transformation before modelling?
+
+Since all rates are effectively annualized, we may need to use log differences to capture the changes in the variables. We will also need to standardize the rates to compare among them. But first lets add a time column.
+
+```{r}
+#Add quarter column for time
+ts_data$Quarter<-seq(as.Date('2002-04-01'),as.Date('2012-12-31'),by='quarter')
+
+#Add rearrange for quarter to come first
+ts_data<-select(ts_data, Quarter, everything())
+
+##Brief exploration
+boxplot(scale(ts_data[,c(2:7)]), main="Boxplot of components", ylab="Rate (%)")
+
+
+#Equity vs Bond
+EvsB_compare<-melt(select(ts_data,Quarter,Equity,Bond),
+                   id.vars = "Quarter",value.name = "Value",variable.name = "DiffType") %>%
+  ggplot(aes(x=Quarter,y=Value,colour=DiffType))+
+  geom_line()+ggtitle("Comparison of Equity and Bond Effective Annual Rates")
+EvsB_compare
+
+## Equity is more volatile with a significant drop due to the impact of the GFC while Bond remains stable with small hump in value.
+
+
+#Quarterly Differences
+PvsWInf_compare<-melt(select(ts_data,Quarter,PQuarDiff,WQuarDiff),
+                      id.vars = "Quarter",value.name = "Value",variable.name = "DiffType") %>%
+  ggplot(aes(x=Quarter,y=Value,colour=DiffType))+geom_line()+ggtitle("Comparison of Quarterly Differences of Price and Wage Inflation Rates")
+PvsWInf_compare
+
+## The inflation rates are cyclical but price inflation appears more volatile
+LvsS_compare<-melt(select(ts_data,Quarter,LTDiff1,STDiff1),
+                   id.vars = "Quarter",value.name = "Value",variable.name = "DiffType") %>%
+  ggplot(aes(x=Quarter,y=Value,colour=DiffType))+geom_line()+ggtitle("Comparison of Quarterly Differences of Long and Short Term Rates")
+LvsS_compare
+
+## Short term and long term rates are equally until the GFC,
+## when short term rates start to fluctuate since then.
+
+```
+
+## 1.Select one variable from the data. Which model would you consider for this variable?
+
+```{r}
+
+#Time Series Analysis
+
+#I choose price inflation
+attach(ts_data)
+acf(ST_Int, main="ACF for Short Term Interest")
+pacf(ST_Int, main="PACF for Short Term Interest")
+## Both tail off thus an ARMA is required.
+ts_analysis<-ts(ST_Int, frequency = 4) %>% decompose()
+plot(ts_analysis)
+
+#Model Selection
+tsmodel<-auto.arima(ST_Int)
+summary(tsmodel)
+## Resulting model selected is ARIMA (1,1,0)
+
+
+```
+
+The model selected is differenced first-order autoregressive model. It helps reduce the correlation of the errors of a random walk model by adding one lag of the dependent variable.
+$$Y_{t} = \mu + Y_{t-1}+\phi_{1} (Y_{t-1} -Y_{t-2})$$
+
+## 2. What are the features and how to do feature selection for time-series models?
+The features for time series model is the lag selection for the model. The easiest way to perform it is to try and fit the lag terms sequentially using stepwise selection and choose the model with the lowest AIC. Although computational expensive, with the size of the dataset we are provided (sample size = 43), it should be sufficient for further analysis.
+
+## 3. What are the measures you will consider for model selection and assessment?
+For model selection, an important criteria will be AIC and BIC to assess the model fit by penalizing parameter with low parsimony. 
+The p-values of the coefficients fitted for the model will be observed. If less than 5%, then they are significant and included for the final model selection. 
+With the residuals, I will use ACF and QQ plot to support the choice of model selection in the lag significance. 
+On top of that, I will use the Ljung Box Test and this will determine whether the autocorrelation for residual errors are non-zero i.e. lack of model fit.
+
+Statistic for Ljung Box Test:
+
+$$ Q(m) = n(n+2) \sum_{j=1}^m \frac{r_{j}^2}{n-j} $$
+
+
+
+```{r}
+
+#AIC and BIC
+tsmodel$aic
+tsmodel$bic
+
+#residual analysis
+res_plot<-LjungBoxTest(tsmodel$residuals) %>% 
+  plot(main="Ljung Box Q Test", xlab="Lag",ylab="p-values")
+##QQplot
+qqnorm(tsmodel$residuals)
+#ACF of residual
+acf(tsmodel$residuals)
+```
+AIC and BIC are low with respective scores of 4.35 and 7.82. Other than the first two lags, the rest has produced high p-values. The Q-Q plot is almost fitted linearly and ACF shows near-zero auto-correlation for residual. These support that model selection is appropriate for forecasting.
+
+
+## 4. Perform model fitting and model selection for this variable.
+As performed above.
+
+## 5. (optional)You could also try other variables and think about how to do multivariate time series modelling considering all variables interested together.
+
+Applying the same procedure with Price and Wage (hidden to save space and results not material for this discussion), the logical way to proceed is to construct a matrix with vector of univariate time series models for each variable and perform model selection and fitting for the corresponding parameters in vectors. 
+
+
+# If you are now given a much bigger dataset including 100 more macroeconomic related variables, similar to the Australian database. What is your suggestion now for the potential models to use? 
+From the previous question, a multivariate time series (MTS) will be implemented instead and one such method will be using vector auto regression (VAR). This essentially incorporates both time series properties i.e. the effect of previous measures and the relationships among variables. 
+
+
